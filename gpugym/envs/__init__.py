@@ -33,6 +33,25 @@ from .base.legged_robot import LeggedRobot
 from gpugym.utils.task_registry import task_registry
 from .PBRS.humanoid import Humanoid
 from .PBRS.humanoid_config import HumanoidCfg, HumanoidCfgPPO
+from .PBRS.humanoid_bridge import HumanoidCfg as HumanoidCfgBridge, HumanoidCfgPPO as HumanoidCfgPPOBridge
+from .PBRS.humanoid_slope import HumanoidCfg as HumanoidCfgSlope, HumanoidCfgPPO as HumanoidCfgPPOSlope
 
 
 task_registry.register("pbrs:humanoid", Humanoid, HumanoidCfg(), HumanoidCfgPPO())
+task_registry.register("pbrs:humanoid_bridge", Humanoid, HumanoidCfgBridge(), HumanoidCfgPPOBridge())
+task_registry.register("pbrs:humanoid_slope", Humanoid, HumanoidCfgSlope(), HumanoidCfgPPOSlope())
+
+from .mujoco_humanoid.humanoid import Humanoid as HumanoidMujoco
+from .mujoco_humanoid.humanoid_config import MujocoInfantCfg, MujocoInfantCfgPPO
+
+task_registry.register("mujoco:infant", HumanoidMujoco, MujocoInfantCfg(), MujocoInfantCfgPPO())
+
+from .mujoco_humanoid_full.humanoid import Humanoid as HumanoidMujoco
+from .mujoco_humanoid_full.humanoid_config import MujocoInfantCfg, MujocoInfantCfgPPO
+
+task_registry.register("mujoco_full:infant", HumanoidMujoco, MujocoInfantCfg(), MujocoInfantCfgPPO())
+
+from .mujoco_humanoid_origin.humanoid import Humanoid as HumanoidMujoco
+from .mujoco_humanoid_origin.humanoid_config import MujocoInfantCfg, MujocoInfantCfgPPO
+
+task_registry.register("mujoco:humanoid", HumanoidMujoco, MujocoInfantCfg(), MujocoInfantCfgPPO())

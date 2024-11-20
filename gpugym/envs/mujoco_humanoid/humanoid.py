@@ -19,7 +19,7 @@ class Humanoid(LeggedRobot):
             self.num_envs, 1, dtype=torch.float,
             device=self.device, requires_grad=False)
         self.eps = 0.2
-        self.phase_freq = 1.
+        self.phase_freq = 1.0
 
     def compute_observations(self):
         base_z = self.root_states[:, 2].unsqueeze(1)*self.obs_scales.base_z
@@ -28,12 +28,14 @@ class Humanoid(LeggedRobot):
         in_contact = torch.cat(
             (in_contact[:, 0].unsqueeze(1), in_contact[:, 1].unsqueeze(1)),
             dim=1)
-        self.commands[:, 0:2] = torch.where(
-            torch.norm(self.commands[:, 0:2], dim=-1, keepdim=True) < 0.5,
-            0., self.commands[:, 0:2].double()).float()
-        self.commands[:, 2:3] = torch.where(
-            torch.abs(self.commands[:, 2:3]) < 0.5,
-            0., self.commands[:, 2:3].double()).float()
+        # self.commands[:, 0:2] = torch.where(
+        #     torch.norm(self.commands[:, 0:2], dim=-1, keepdim=True) < 0.2,
+        #     0., self.commands[:, 0:2].double()).float()
+        # self.commands[:, 2:3] = torch.where(
+        #     torch.abs(self.commands[:, 2:3]) < 0.4,
+        #     0., self.commands[:, 2:3].double()).float()
+        # print(self.smooth_sqr_wave(self.phase))
+        # print(base_z)
         self.obs_buf = torch.cat((
             base_z,                                 # [1] Base height
             self.base_lin_vel,                      # [3] Base linear velocity
@@ -47,12 +49,13 @@ class Humanoid(LeggedRobot):
             self.dof_vel,                           # [10] Joint velocities
             in_contact,                             # [2] Contact states
         ), dim=-1)
-        if self.cfg.terrain.measure_heights:
-            heights = torch.clip(self.root_states[:, 2].unsqueeze(1) - 0.5 - self.measured_heights, -1, 1.)*self.obs_scales.height_measurements
-            self.obs_buf = torch.cat((self.obs_buf, heights), dim=-1)
         if self.add_noise:
             self.obs_buf += (2*torch.rand_like(self.obs_buf) - 1) \
                 * self.noise_scale_vec
+            
+    def step(self, actions):
+        # actions[:, -6:] = 0.0
+        return super().step(actions)
 
     def _get_noise_scale_vec(self, cfg):
         noise_vec = torch.zeros_like(self.obs_buf[0])
@@ -64,11 +67,11 @@ class Humanoid(LeggedRobot):
         noise_vec[4:7] = noise_scales.ang_vel
         noise_vec[7:10] = noise_scales.gravity
         noise_vec[10:16] = 0.   # commands
-        noise_vec[16:26] = noise_scales.dof_pos
-        noise_vec[26:36] = noise_scales.dof_vel
-        noise_vec[36:38] = noise_scales.in_contact  # previous actions
+        noise_vec[16:28] = noise_scales.dof_pos
+        noise_vec[28:40] = noise_scales.dof_vel
+        noise_vec[40:42] = noise_scales.in_contact  # previous actions
         if self.cfg.terrain.measure_heights:
-            noise_vec[48:235] = noise_scales.height_measurements \
+            noise_vec[42:235] = noise_scales.height_measurements \
                 * noise_level \
                 * self.obs_scales.height_measurements
         noise_vec = noise_vec * noise_level
@@ -81,7 +84,8 @@ class Humanoid(LeggedRobot):
             (torch.numel(env_ids),), requires_grad=False, device=self.device)
 
     def _post_physics_step_callback(self):
-        self.phase = torch.fmod(self.phase + self.dt, 1.0)
+        self.phase = torch.fmod(
+            self.phase/self.phase_freq + self.dt, 1/self.phase_freq)
         env_ids = (
             self.episode_length_buf
             % int(self.cfg.commands.resampling_time / self.dt) == 0) \
@@ -95,9 +99,6 @@ class Humanoid(LeggedRobot):
                 (self.common_step_counter
                 % self.cfg.domain_rand.push_interval == 0)):
                 self._push_robots()
-
-        if self.cfg.terrain.measure_heights:
-            self.measured_heights = self._get_heights()
 
     def _push_robots(self):
         # Randomly pushes the robots.
@@ -195,6 +196,13 @@ class Humanoid(LeggedRobot):
         error += self.sqrdexp(
             (self.dof_pos[:, 9]) / self.cfg.normalization.obs_scales.dof_pos)
         return error
+    
+    def _reward_floating_time(self):
+        in_contact = torch.gt(
+            self.contact_forces[:, self.end_eff_ids, 2], 0)
+        floating = torch.all(~in_contact, dim=1).float()
+        # print(floating.mean())
+        return floating
 
     # * Potential-based rewards * #
 
@@ -226,6 +234,6 @@ class Humanoid(LeggedRobot):
         return torch.exp(-torch.square(x)/self.cfg.rewards.tracking_sigma)
 
     def smooth_sqr_wave(self, phase):
-        p = 2.*torch.pi*phase * self.phase_freq
+        p = 2. * torch.pi * phase  #  * self.phase_freq
         return torch.sin(p) / \
             (2*torch.sqrt(torch.sin(p)**2. + self.eps**2.)) + 1./2.

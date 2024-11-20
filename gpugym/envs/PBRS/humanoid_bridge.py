@@ -10,48 +10,52 @@ from gpugym.envs.base.legged_robot_config \
 
 class HumanoidCfg(LeggedRobotCfg):
     class env(LeggedRobotCfg.env):
-        num_envs = 4096
-        num_observations = 38
+        num_envs = 4096        
+        num_observations = 225
         num_actions = 10
-        episode_length_s = 5
+        episode_length_s = 8
+
+        recording_width_px = 368
+        recording_height_px = 240
+
+    class commands(LeggedRobotCfg.commands):
+        heading_command = True # if true: compute ang vel command from heading error
+        class ranges:
+            lin_vel_x = [0.5, 0.5] # min max [m/s]
+            lin_vel_y = [-0.0, 0.0]   # min max [m/s]
+            ang_vel_yaw = [-0.0, 0.0]    # min max [rad/s]
+            heading = [-0.0, 0.0]
 
     class terrain(LeggedRobotCfg.terrain):
         curriculum = False
-        mesh_type = 'plane'
-        measure_heights = False
+        mesh_type = 'trimesh'
 
-    class commands(LeggedRobotCfg.commands):
-        curriculum = False
-        max_curriculum = 1.
-        num_commands = 4
-        resampling_time = 5.
-        heading_command = False
-        ang_vel_command = True
-
-        class ranges:
-            # TRAINING COMMAND RANGES #
-            lin_vel_x = [0, 4.5]        # min max [m/s]
-            lin_vel_y = [-0.75, 0.75]   # min max [m/s]
-            ang_vel_yaw = [-2., 2.]     # min max [rad/s]
-            heading = [0., 0.]
-
-            # PLAY COMMAND RANGES #
-            # lin_vel_x = [3., 3.]    # min max [m/s]
-            # lin_vel_y = [-0., 0.]     # min max [m/s]
-            # ang_vel_yaw = [2, 2]      # min max [rad/s]
-            # heading = [0, 0]
+        selected = True
+        measure_heights = True
+        measured_points_x = [-0.8, -0.7, -0.6, -0.5, -0.4, -0.3, -0.2, -0.1, 0., 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8] # 1mx1.6m rectangle (without center line)
+        measured_points_y = [-0.5, -0.4, -0.3, -0.2, -0.1, 0., 0.1, 0.2, 0.3, 0.4, 0.5]
+        
+        selected=True
+        # terrain_kwargs={
+        #     "type": "pyramid_sloped_terrain",
+        #     "slope": 1,
+        #     "platform_size": 3.0
+        # }
+        terrain_kwargs={
+            "type": "bridge_terrain",
+        }
 
     class init_state(LeggedRobotCfg.init_state):
         reset_mode = 'reset_to_range'
         penetration_check = False
-        pos = [0., 0., 0.75]        # x,y,z [m]
+        pos = [-1.0, 0., 0.75]        # x,y,z [m]
         rot = [0.0, 0.0, 0.0, 1.0]  # x,y,z,w [quat]
         lin_vel = [0.0, 0.0, 0.0]   # x,y,z [m/s]
         ang_vel = [0.0, 0.0, 0.0]   # x,y,z [rad/s]
 
         # ranges for [x, y, z, roll, pitch, yaw]
         root_pos_range = [
-            [0., 0.],
+            [-1.0, -1.0],
             [0., 0.],
             [0.72, 0.72],
             [-torch.pi/10, torch.pi/10],

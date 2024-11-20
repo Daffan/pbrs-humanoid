@@ -108,7 +108,7 @@ class LeggedRobot(BaseTask):
 
             self.gym.set_dof_actuation_force_tensor(self.sim, gymtorch.unwrap_tensor(self.torques))
             self.gym.simulate(self.sim)
-            if self.device == 'cpu':
+            if self.device == 'cpu' or self.if_render_all_envs:
                 self.gym.fetch_results(self.sim, True)
             self.gym.refresh_dof_state_tensor(self.sim)
         self.post_physics_step()
@@ -128,6 +128,13 @@ class LeggedRobot(BaseTask):
         Nothing by default
         """
         return 0
+    
+    def render_all_envs(self):
+        if not self.if_render_all_envs:
+            return None
+        else:
+            video_frames = [self.image_tensors[i].detach().cpu().numpy() for i in range(self.num_envs)]
+            return video_frames
 
 
     def post_physics_step(self):
@@ -140,6 +147,14 @@ class LeggedRobot(BaseTask):
         self.gym.refresh_jacobian_tensors(self.sim)
         self.gym.refresh_mass_matrix_tensors(self.sim)
 
+        if self.if_render_all_envs:
+            self.gym.step_graphics(self.sim)
+            self.gym.render_all_camera_sensors(self.sim)
+            self.gym.start_access_image_tensors(self.sim)
+
+            self.camera_frames.append((torch.stack(self.image_tensors, dim=0).clone()))  # list of lists of tensors
+            self.gym.end_access_image_tensors(self.sim)
+
         self.episode_length_buf += 1
         self.common_step_counter += 1
 
@@ -148,6 +163,7 @@ class LeggedRobot(BaseTask):
         self.base_lin_vel[:] = quat_rotate_inverse(self.base_quat, self.root_states[:, 7:10])
         self.base_ang_vel[:] = quat_rotate_inverse(self.base_quat, self.root_states[:, 10:13])
         self.projected_gravity[:] = quat_rotate_inverse(self.base_quat, self.gravity_vec)
+        self.foot_pos[:] = self._rigid_body_state.view(self.num_envs, self.num_bodies, 13)[:, self.feet_indices, 0:3]
 
         self._post_physics_step_callback()
 
@@ -347,6 +363,15 @@ class LeggedRobot(BaseTask):
                 self.dof_pos_limits[i, 0] = m - 0.5 * r \
                                            *self.cfg.rewards.soft_dof_pos_limit
                 self.dof_pos_limits[i, 1] = m + 0.5 * r * self.cfg.rewards.soft_dof_pos_limit
+            # hard code torque limits, because it's not readable from xml
+            # self.torque_limits = torch.tensor([
+            #     45.0, 45.0, 135.0, 90.0, 22.5, 22.5, 44.5, 44.5, \
+            #     135.0, 90.0, 22.5, 22.5, 22.5, 22.5, 22.5, 22.5, 22.5, 22.5,
+            # ], device=self.device, dtype=torch.float, requires_grad=False)
+            # self.dof_vel_limits /= 2.0
+            # print("Position limits: ", self.dof_pos_limits)
+            # print("Velocity limits: ", self.dof_vel_limits)
+            # print("Torque limits: ", self.torque_limits)
         return props
 
 
@@ -355,14 +380,15 @@ class LeggedRobot(BaseTask):
             m = 0
             for i, p in enumerate(props):
                 m += p.mass
-            #     print(f"Mass of body {i}: {p.mass} (before randomization)")
-            # print(f"Total mass {m} (before randomization)")
+                print(f"Mass of body {i}: {p.mass} (before randomization)")
+            print(f"Total mass {m} (before randomization)")
             self.mass_total = m
             
         # randomize base mass
         if self.cfg.domain_rand.randomize_base_mass:
             rng = self.cfg.domain_rand.added_mass_range
             props[0].mass += np.random.uniform(rng[0], rng[1])
+            props[0].mass *= 2
         return props
 
 
@@ -402,6 +428,7 @@ class LeggedRobot(BaseTask):
 
         # set small commands to zero
         self.commands[env_ids, :2] *= (torch.norm(self.commands[env_ids, :2], dim=1) > 0.2).unsqueeze(1)
+        self.commands[env_ids, 3:4] *= (torch.norm(self.commands[env_ids, 3:4], dim=1) > 0.4).unsqueeze(1)
 
 
     def _compute_torques(self, actions):
@@ -437,6 +464,7 @@ class LeggedRobot(BaseTask):
 
         else:
             raise NameError(f"Unknown controller type: {self.cfg.control.control_type}")
+        torques = torques + torch.rand_like(torques) * self.cfg.control.torque_scale * torch.abs(torques)
         return torch.clip(torques, -self.torque_limits, self.torque_limits)
 
 
@@ -635,6 +663,7 @@ class LeggedRobot(BaseTask):
         self.base_pos = self.root_states[:, 0:3]
         self.base_quat = self.root_states[:, 3:7]
         self.contact_forces = gymtorch.wrap_tensor(net_contact_forces).view(self.num_envs, -1, 3) # shape: num_envs, num_bodies, xyz axis
+        self.foot_pos = self._rigid_body_state.view(self.num_envs, self.num_bodies, 13)[:, self.feet_indices, 0:3]
 
         # initialize some data used later on
         self.common_step_counter = 0
@@ -749,6 +778,8 @@ class LeggedRobot(BaseTask):
             self.root_vel_range = torch.tensor(self.cfg.init_state.root_vel_range,
                     dtype=torch.float, device=self.device, requires_grad=False)
             # todo check for consistency (low first, high second)
+
+            self.camera_frames = []
 
 
     def _prepare_reward_function(self):
@@ -882,6 +913,7 @@ class LeggedRobot(BaseTask):
         env_lower = gymapi.Vec3(0., 0., 0.)
         env_upper = gymapi.Vec3(0., 0., 0.)
         self.actor_handles = []
+        self.image_tensors = []
         self.envs = []
         for i in range(self.num_envs):
             # create env instance
@@ -900,6 +932,27 @@ class LeggedRobot(BaseTask):
             self.gym.set_actor_rigid_body_properties(env_handle, legged_robot_handle, body_props, recomputeInertia=True)
             self.envs.append(env_handle)
             self.actor_handles.append(legged_robot_handle)
+
+
+            if self.if_render_all_envs or (i == 0 and self.debug_viz):
+                camera_props = gymapi.CameraProperties()
+                # camera_props.enable_tensors = True
+                camera_props.width = self.cfg.env.recording_width_px
+                camera_props.height = self.cfg.env.recording_height_px
+                camera_props.enable_tensors = True
+                # camera_props.horizontal_fov = self.cfg["env"]["camera"]["horizontal_fov"]
+                camera_handle = self.gym.create_camera_sensor(env_handle, camera_props)
+
+                local_transform = gymapi.Transform()
+                local_transform.p = gymapi.Vec3(0.8, 0, 0.40)
+                local_transform.r = gymapi.Quat.from_axis_angle(gymapi.Vec3(0, 0, 1), np.radians(180))
+                local_transform.r *= gymapi.Quat.from_axis_angle(gymapi.Vec3(0, 1, 0), np.radians(30))
+
+
+                self.gym.attach_camera_to_body(camera_handle, env_handle, legged_robot_handle, local_transform, gymapi.FOLLOW_POSITION)
+
+                video_frame_tensor = self.gym.get_camera_image_gpu_tensor(self.sim, self.envs[i], camera_handle, gymapi.IMAGE_COLOR)
+                self.image_tensors.append(gymtorch.wrap_tensor(video_frame_tensor).view((camera_props.height, camera_props.width, 4)))
 
         self.feet_indices = torch.zeros(len(feet_names), dtype=torch.long, device=self.device, requires_grad=False)
         for i in range(len(feet_names)):
@@ -951,6 +1004,7 @@ class LeggedRobot(BaseTask):
             self.cfg.terrain.curriculum = False
         self.max_episode_length_s = self.cfg.env.episode_length_s
         self.max_episode_length = np.ceil(self.max_episode_length_s / self.dt)
+        self.if_render_all_envs = self.cfg.env.render_all_envs if hasattr(self.cfg.env, "render_all_envs") else False
 
         self.cfg.domain_rand.push_interval = np.ceil(self.cfg.domain_rand.push_interval_s / self.dt)
 
